@@ -1,0 +1,6 @@
+{
+  "name": "FinSim",
+  "description": "An interactive historical stock market and financial life simulator where you start in 2008 with $10k and aim to reach $1M by 2025.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
