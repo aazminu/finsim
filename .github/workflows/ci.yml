@@ -1,0 +1,23 @@
+name: finsim CI
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run portfolio engine unit tests
+        run: node --test tests/portfolioEngine.test.mjs
+      - name: Run CLI verification
+        run: |
+          node bin/finsim-cli.mjs metrics
+          node bin/finsim-cli.mjs rebalance
+          node bin/finsim-cli.mjs montecarlo
