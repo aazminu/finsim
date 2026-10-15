@@ -8,7 +8,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
-import { computeRiskMetrics, computeRebalanceTrades, runMonteCarloProjection } from './src/quant/portfolioEngine.mjs';
+import { computeRiskMetrics, computeRebalanceTrades, runMonteCarloProjection, registerPortfolioRoutes } from './src/quant/portfolioEngine.mjs';
 
 // Load environment variables
 dotenv.config();
@@ -220,18 +220,7 @@ Generate the event in strict JSON format. Do not use markdown backticks around t
 });
 
 // Quantitative Risk Metrics, Rebalancing, and Monte Carlo Endpoints
-app.post('/api/portfolio/metrics', (req, res) => {
-  const { wealthSeries, riskFreeRate, periodsPerYear } = req.body || {};
-  res.json(computeRiskMetrics(wealthSeries, { riskFreeRate, periodsPerYear }));
-});
-
-app.post('/api/portfolio/rebalance', (req, res) => {
-  res.json(computeRebalanceTrades(req.body || {}));
-});
-
-app.post('/api/portfolio/montecarlo', (req, res) => {
-  res.json(runMonteCarloProjection(req.body || {}));
-});
+registerPortfolioRoutes(app);
 
 // Vite & Static file serving coordinate middleware
 async function bootstrap() {
