@@ -49,7 +49,9 @@ export function computeRiskMetrics(
   wealthSeries,
   { riskFreeRate = 0.04, periodsPerYear = 1 } = {}
 ) {
-  const valid = (wealthSeries || []).map(Number).filter((v) => Number.isFinite(v) && v > 0);
+  const valid = (Array.isArray(wealthSeries) ? wealthSeries : [])
+    .map(Number)
+    .filter((v) => Number.isFinite(v) && v > 0);
   if (valid.length < 2) {
     return {
       periods: 0,
@@ -64,6 +66,12 @@ export function computeRiskMetrics(
     };
   }
 
+  const ppy =
+    Number.isFinite(Number(periodsPerYear)) && Number(periodsPerYear) > 0
+      ? Number(periodsPerYear)
+      : 1;
+  const rf = Number.isFinite(Number(riskFreeRate)) ? Number(riskFreeRate) : 0.04;
+
   const returns = [];
   for (let i = 1; i < valid.length; i++) {
     returns.push((valid[i] - valid[i - 1]) / valid[i - 1]);
@@ -73,29 +81,29 @@ export function computeRiskMetrics(
   const startVal = valid[0];
   const endVal = valid[valid.length - 1];
   const totalReturn = (endVal - startVal) / startVal;
-  const years = n / periodsPerYear;
+  const years = n / ppy;
   const cagr = years > 0 ? Math.pow(endVal / startVal, 1 / years) - 1 : totalReturn;
 
   const meanPeriodRet = returns.reduce((a, b) => a + b, 0) / n;
-  const rfPeriod = riskFreeRate / periodsPerYear;
+  const rfPeriod = rf / ppy;
 
   const variance =
     n > 1
       ? returns.reduce((acc, r) => acc + Math.pow(r - meanPeriodRet, 2), 0) / (n - 1)
       : 0;
   const periodVol = Math.sqrt(Math.max(0, variance));
-  const annVol = periodVol * Math.sqrt(periodsPerYear);
+  const annVol = periodVol * Math.sqrt(ppy);
 
   const excessPeriodRet = meanPeriodRet - rfPeriod;
   const sharpe =
-    periodVol > 1e-9 ? (excessPeriodRet / periodVol) * Math.sqrt(periodsPerYear) : 0;
+    periodVol > 1e-9 ? (excessPeriodRet / periodVol) * Math.sqrt(ppy) : 0;
 
   // Downside deviation relative to riskFreeRate
   const downsideSq = returns.map((r) => Math.pow(Math.min(0, r - rfPeriod), 2));
   const downsideDevPeriod = Math.sqrt(downsideSq.reduce((a, b) => a + b, 0) / n);
   const sortino =
     downsideDevPeriod > 1e-9
-      ? (excessPeriodRet / downsideDevPeriod) * Math.sqrt(periodsPerYear)
+      ? (excessPeriodRet / downsideDevPeriod) * Math.sqrt(ppy)
       : sharpe > 0
       ? 10.0
       : 0;
@@ -164,11 +172,17 @@ export function computeRebalanceTrades({
   };
 
   const tickerByBucket = { ...defaultTickerForBucket };
+  const resolvedPrices = {};
+  for (const [k, v] of Object.entries(prices || {})) {
+    const p = Number(v);
+    if (Number.isFinite(p) && p > 0) resolvedPrices[k] = p;
+  }
 
   for (const [ticker, pos] of Object.entries(holdings || {})) {
     const shares = Number(pos?.shares ?? pos) || 0;
-    const price = Number(prices[ticker] ?? pos?.currentPrice ?? pos?.averageCost) || 0;
+    const price = Number(resolvedPrices[ticker] ?? pos?.currentPrice ?? pos?.averageCost) || 0;
     if (shares <= 0 || price <= 0) continue;
+    resolvedPrices[ticker] = price;
     const val = shares * price;
     holdingsValue += val;
     const bucket = ASSET_CLASS_BY_TICKER[ticker] || 'equity_index';
@@ -210,7 +224,7 @@ export function computeRebalanceTrades({
     if (Math.abs(diffUsd) < minTradeUsd) continue;
 
     const ticker = tickerByBucket[bucket];
-    const price = Number(prices[ticker]) || 100;
+    const price = Number(resolvedPrices[ticker] ?? prices?.[ticker]) || 100;
     if (price <= 0) continue;
 
     if (diffUsd < 0) {
@@ -248,10 +262,11 @@ export function computeRebalanceTrades({
   for (const buy of rawBuys) {
     const allocUsd = Math.min(buy.desiredUsd, spendableCash);
     if (allocUsd < minTradeUsd) continue;
-    const shares = Number((allocUsd / buy.price).toFixed(4));
+    const shares = Math.floor((allocUsd / buy.price) * 10000) / 10000;
+    if (shares <= 0) continue;
     const notionalUsd = Number((shares * buy.price).toFixed(2));
-    spendableCash -= notionalUsd;
-    availableCash -= notionalUsd;
+    spendableCash = Math.max(0, spendableCash - notionalUsd);
+    availableCash = Math.max(0, availableCash - notionalUsd);
     executedTrades.push({
       side: 'BUY',
       bucket: buy.bucket,
@@ -295,18 +310,25 @@ export function runMonteCarloProjection({
   paths = 500,
   seed = 42,
 } = {}) {
-  const rng = createSeededRng(seed);
-  const terminalValues = [];
-  const drift = expectedReturn - 0.5 * volatility * volatility;
+  const initW = Math.max(0, Number(initialWealth) || 0);
+  const annContrib = Number(annualContribution) || 0;
+  const expRet = Number.isFinite(Number(expectedReturn)) ? Number(expectedReturn) : 0.08;
+  const vol = Math.max(0, Number.isFinite(Number(volatility)) ? Number(volatility) : 0.16);
+  const nYears = Math.max(0, Math.min(100, Math.floor(Number(years ?? 10) || 0)));
+  const nPaths = Math.max(1, Math.min(10000, Math.floor(Number(paths) || 500)));
 
-  for (let p = 0; p < paths; p++) {
-    let w = Math.max(0, Number(initialWealth) || 0);
-    for (let y = 0; y < years; y++) {
+  const rng = createSeededRng(Number(seed) || 42);
+  const terminalValues = [];
+  const drift = expRet - 0.5 * vol * vol;
+
+  for (let p = 0; p < nPaths; p++) {
+    let w = initW;
+    for (let y = 0; y < nYears; y++) {
       const u1 = Math.max(1e-12, rng());
       const u2 = rng();
       const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-      const growth = Math.exp(drift + volatility * z);
-      w = w * growth + annualContribution;
+      const growth = Math.exp(drift + vol * z);
+      w = Math.max(0, w * growth + annContrib);
     }
     terminalValues.push(w);
   }
@@ -320,20 +342,39 @@ export function runMonteCarloProjection({
     return Number(terminalValues[idx].toFixed(2));
   };
 
-  const totalInvested = initialWealth + annualContribution * years;
+  const totalInvested = Number((initW + annContrib * nYears).toFixed(2));
   const winCount = terminalValues.filter((v) => v > totalInvested).length;
 
   return {
-    initialWealth,
-    annualContribution,
-    years,
-    paths,
+    initialWealth: initW,
+    annualContribution: annContrib,
+    years: nYears,
+    paths: nPaths,
     totalInvested,
     p10: pct(0.10),
     p25: pct(0.25),
     p50: pct(0.50),
     p75: pct(0.75),
     p90: pct(0.90),
-    probAbovePrincipal: Number((winCount / paths).toFixed(4)),
+    probAbovePrincipal: Number((winCount / nPaths).toFixed(4)),
   };
 }
+
+/**
+ * Register quantitative portfolio analytics HTTP endpoints on an Express-compatible app.
+ */
+export function registerPortfolioRoutes(app) {
+  app.post('/api/portfolio/metrics', (req, res) => {
+    const { wealthSeries, riskFreeRate, periodsPerYear } = req.body || {};
+    res.json(computeRiskMetrics(wealthSeries, { riskFreeRate, periodsPerYear }));
+  });
+
+  app.post('/api/portfolio/rebalance', (req, res) => {
+    res.json(computeRebalanceTrades(req.body || {}));
+  });
+
+  app.post('/api/portfolio/montecarlo', (req, res) => {
+    res.json(runMonteCarloProjection(req.body || {}));
+  });
+}
+
